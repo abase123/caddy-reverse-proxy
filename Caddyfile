@@ -34,26 +34,6 @@
 		format json # set access log format to json mode
 	}
 	
-	# ✅ NEW: OAuth2 callback route - goes to backend, keeps full path
-	handle /login/oauth2/code/* {
-		reverse_proxy {
-			dynamic a {
-				name {$BACKEND_DOMAIN}
-				port {$BACKEND_PORT}
-				refresh 1s
-				dial_timeout 30s
-				versions ipv4
-			}
-			import lb_settings
-			import passive_health_checks
-			header_up Host {upstream_hostport}
-			header_up X-Forwarded-Proto https
-			header_up X-Forwarded-Host {host}
-			header_up X-Forwarded-For {remote_host}
-			header_up X-Real-IP {remote_host}
-		}
-	}
-	
 	# ✅ NEW: OAuth2 authorization route - goes to backend, keeps full path
 	handle /oauth2/authorization/* {
 		reverse_proxy {
