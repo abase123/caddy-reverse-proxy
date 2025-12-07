@@ -34,6 +34,38 @@
 		format json # set access log format to json mode
 	}
 
+	# OAuth2 paths must go to backend
+    handle /oauth2/* {
+        reverse_proxy {
+            dynamic a {
+                name {$BACKEND_DOMAIN}
+                port {$BACKEND_PORT}
+                refresh 1s
+                dial_timeout 30s
+                versions ipv4 ipv6
+            }
+            import lb_settings
+            import passive_health_checks
+            header_up Host {upstream_hostport}
+        }
+    }
+
+    # OAuth2 callback must go to backend
+    handle /login/oauth2/* {
+        reverse_proxy {
+            dynamic a {
+                name {$BACKEND_DOMAIN}
+                port {$BACKEND_PORT}
+                refresh 1s
+                dial_timeout 30s
+                versions ipv4 ipv6
+            }
+            import lb_settings
+            import passive_health_checks
+            header_up Host {upstream_hostport}
+        }
+    }
+
 	# proxy all requests for /* to the frontend, configure these variables in the service settings
 	reverse_proxy {
 		# for private networking replicas are exposed as multiple dns results, use those dns results as the upstreams
@@ -52,7 +84,7 @@
 		import passive_health_checks
 
 		# sets the Host header to the header to the dynamic name and port options
-		#header_up Host {upstream_hostport}
+		header_up Host {upstream_hostport}
 	}
 
 	# the handle_path directive WILL strip /api/ from the path before proxying
@@ -80,7 +112,7 @@
 			import passive_health_checks
 
 			# sets the Host header to the header to the dynamic name and port options
-			#header_up Host {upstream_hostport}
+			header_up Host {upstream_hostport}
 		}
 	}
 }
