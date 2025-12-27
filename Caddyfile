@@ -95,15 +95,19 @@
 	}
 
 	# Debug endpoint - shows what IP Caddy sees (remove in production!)
-	handle /debug/ip {
+	# Using route to ensure this runs BEFORE any other matchers
+	route /debug/ip {
 		respond "Remote IP: {remote_host}
 Client IP: {client_ip}
 X-Forwarded-For: {header.X-Forwarded-For}
 X-Real-IP: {header.X-Real-IP}"
 	}
 
-	# Apply geo-blocking first (before anything else)
-	import geo_block_scandinavia
+	# Apply geo-blocking (skip for debug endpoint above)
+	@not_debug not path /debug/ip
+	handle @not_debug {
+		import geo_block_scandinavia
+	}
 	
 	# Apply rate limiting
 	import rate_limiting
