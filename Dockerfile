@@ -3,7 +3,7 @@ FROM caddy:builder-alpine AS builder
 
 RUN xcaddy build \
     --with github.com/mholt/caddy-ratelimit \
-    --with github.com/porech/caddy-maxmind-geolocation
+    --with github.com/zhangjiayin/caddy-geoip2
 
 # Runtime stage
 FROM caddy:latest
@@ -22,9 +22,6 @@ COPY --chmod=755 entrypoint.sh ./
 
 # Create directory for GeoIP database
 RUN mkdir -p /usr/share/GeoIP
-
-# Copy GeoIP database (you need to download this from MaxMind)
-# COPY GeoLite2-Country.mmdb /usr/share/GeoIP/
 
 RUN caddy fmt --overwrite Caddyfile
 
