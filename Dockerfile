@@ -10,6 +10,9 @@ FROM caddy:latest
 
 WORKDIR /app
 
+# Install curl for downloading GeoIP database
+RUN apk add --no-cache curl ca-certificates
+
 # Copy the custom-built Caddy binary
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 
