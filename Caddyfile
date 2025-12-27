@@ -1,13 +1,15 @@
 # global options
 {
-	admin off
-	persist_config off
-	auto_https off
+	admin off # theres no need for the admin api in railway's environment
+	persist_config off # storage isn't persistent anyway
+	auto_https off # railway handles https for us, this could in some cases cause issues if left enabled
+	# runtime logs
 	log {
-		format json
+		format json # set runtime log format to json mode 
 	}
+	# server options
 	servers {
-		trusted_proxies static private_ranges
+		trusted_proxies static private_ranges # trust railway's proxy
 	}
 }
 
@@ -25,132 +27,48 @@
 	unhealthy_request_count 200
 }
 
-# Bot protection snippets
-(block_bad_bots) {
-	@bad_bots {
-		header User-Agent *sqlmap*
-		header User-Agent *nikto*
-		header User-Agent *masscan*
-		header User-Agent *nmap*
-		header User-Agent *ZmEu*
-		header User-Agent *scrapy*
-	}
-	respond @bad_bots 403
-}
-
-(block_scanner_paths) {
-	@scanner_paths {
-		path /wp-admin/* /wp-login.php /xmlrpc.php
-		path /.env /config.php /phpmyadmin/*
-		path /.git/* /backup/* /admin.php
-	}
-	respond @scanner_paths 404
-}
-
-(security_headers) {
-	header {
-		X-Content-Type-Options nosniff
-		X-Frame-Options DENY
-		X-XSS-Protection "1; mode=block"
-		Referrer-Policy strict-origin-when-cross-origin
-		-Server
-	}
-}
-
+# site block, listens on the $PORT environment variable, automatically assigned by railway
 :{$PORT} {
+	# access logs
 	log {
-		format json
+		format json # set access log format to json mode
 	}
 
-	# Apply global bot protection
-	import block_bad_bots
-	import block_scanner_paths
-	import security_headers
+	# OAuth2 paths must go to backend
+    handle /oauth2/* {
+        reverse_proxy {
+            dynamic a {
+                name {$BACKEND_DOMAIN}
+                port {$BACKEND_PORT}
+                refresh 1s
+                dial_timeout 30s
+                versions ipv4 ipv6
+            }
+            import lb_settings
+            import passive_health_checks
+            header_up Host {upstream_hostport}
+        }
+    }
 
-	# OAuth2 paths - STRICT rate limiting (authentication endpoints)
-	handle /oauth2/* {
-		rate_limit {
-			zone oauth {
-				key {remote_host}
-				events 10
-				window 1m
-			}
-		}
-		reverse_proxy {
-			dynamic a {
-				name {$BACKEND_DOMAIN}
-				port {$BACKEND_PORT}
-				refresh 1s
-				dial_timeout 30s
-				versions ipv4 ipv6
-			}
-			import lb_settings
-			import passive_health_checks
-			header_up Host {upstream_hostport}
-			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-For {remote_host}
-		}
-	}
+    # OAuth2 callback must go to backend
+    handle /login/oauth2/* {
+        reverse_proxy {
+            dynamic a {
+                name {$BACKEND_DOMAIN}
+                port {$BACKEND_PORT}
+                refresh 1s
+                dial_timeout 30s
+                versions ipv4 ipv6
+            }
+            import lb_settings
+            import passive_health_checks
+            header_up Host {upstream_hostport}
+        }
+    }
 
-	# OAuth2 callback - STRICT rate limiting
-	handle /login/oauth2/* {
-		rate_limit {
-			zone login {
-				key {remote_host}
-				events 15
-				window 2m
-			}
-		}
-		reverse_proxy {
-			dynamic a {
-				name {$BACKEND_DOMAIN}
-				port {$BACKEND_PORT}
-				refresh 1s
-				dial_timeout 30s
-				versions ipv4 ipv6
-			}
-			import lb_settings
-			import passive_health_checks
-			header_up Host {upstream_hostport}
-			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-For {remote_host}
-		}
-	}
-
-	# API endpoints - MODERATE rate limiting
-	handle_path {$BACKEND_PATH:/api}/* {
-		rate_limit {
-			zone api {
-				key {remote_host}
-				events 100
-				window 1m
-			}
-		}
-		reverse_proxy {
-			dynamic a {
-				name {$BACKEND_DOMAIN}
-				port {$BACKEND_PORT}
-				refresh 1s
-				dial_timeout 30s
-				versions ipv4 ipv6
-			}
-			import lb_settings
-			import passive_health_checks
-			header_up Host {upstream_hostport}
-			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-For {remote_host}
-		}
-	}
-
-	# Frontend - LENIENT rate limiting
+	# proxy all requests for /* to the frontend, configure these variables in the service settings
 	reverse_proxy {
-		rate_limit {
-			zone frontend {
-				key {remote_host}
-				events 200
-				window 1m
-			}
-		}
+		# for private networking replicas are exposed as multiple dns results, use those dns results as the upstreams
 		dynamic a {
 			name {$FRONTEND_DOMAIN}
 			port {$FRONTEND_PORT}
@@ -158,8 +76,43 @@
 			dial_timeout 30s
 			versions ipv4 ipv6
 		}
+
+		# configure load balancing settings
 		import lb_settings
+
+		# configure passive health checks
 		import passive_health_checks
+
+		# sets the Host header to the header to the dynamic name and port options
 		header_up Host {upstream_hostport}
+	}
+
+	# the handle_path directive WILL strip /api/ from the path before proxying
+	# use `handle` instead of `handle_path` if you dont want to strip the /api/ path
+	# this is needed if your backend's api routes don't start with /api/
+	# change paths as needed
+	handle_path {$BACKEND_PATH:/api}/* {
+		# the /api/ prefix WILL be stripped from the uri sent to the proxy host
+		#
+		# proxy all requests for /api/* to the backend, configure this variable in the service settings
+		reverse_proxy {
+			# for private networking replicas are exposed as multiple dns results, use those dns results as the upstreams
+			dynamic a {
+				name {$BACKEND_DOMAIN}
+				port {$BACKEND_PORT}
+				refresh 1s
+				dial_timeout 30s
+				versions ipv4 ipv6
+			}
+
+			# configure load balancing settings
+			import lb_settings
+
+			# configure passive health checks
+			import passive_health_checks
+
+			# sets the Host header to the header to the dynamic name and port options
+			header_up Host {upstream_hostport}
+		}
 	}
 }
