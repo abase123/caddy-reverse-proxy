@@ -1,30 +1,23 @@
 # global options
 {
-	admin off
-	persist_config off
-	auto_https off
-
-	# Order directives - geoip2_vars must come first to set variables
-	order geoip2_vars first
+	admin off # theres no need for the admin api in railway's environment
+	persist_config off # storage isn't persistent anyway
+	auto_https off # railway handles https for us, this could in some cases cause issues if left enabled
+	
+	# Order rate_limit before other handlers
 	order rate_limit before basic_auth
-
+	
 	# runtime logs
 	log {
-		format json
+		format json # set runtime log format to json mode 
 	}
-
 	# server options
 	servers {
 		# Trust all proxies since Railway's edge proxies don't have static IPs
+		# Railway appends the real client IP to X-Forwarded-For (rightmost is trustworthy)
 		trusted_proxies static 0.0.0.0/0 ::/0
 		# Use strict mode to parse X-Forwarded-For from right-to-left (more secure)
 		trusted_proxies_strict
-	}
-
-	# GeoIP2 database configuration
-	geoip2 {
-		databaseDirectory "/usr/share/GeoIP/"
-		editionID "GeoLite2-Country"
 	}
 }
 
@@ -45,15 +38,15 @@
 # Geo-blocking snippet - allows only Scandinavian countries
 # NO = Norway, SE = Sweden, DK = Denmark, FI = Finland, IS = Iceland
 (geo_block_scandinavia) {
-	# Use trusted_proxies mode to respect X-Forwarded-For header
-	geoip2_vars trusted_proxies
-
-	# Block if NOT in Scandinavia AND NOT from private IP ranges
 	@blocked_geo {
-		not expression `{geoip2.country_code} in ["NO", "SE", "DK", "FI", "IS"]`
+		not maxmind_geolocation {
+			db_path "/usr/share/GeoIP/GeoLite2-Country.mmdb"
+			allow_countries NO SE DK FI IS
+		}
+		# Also allow private/local IP ranges (for internal services)
 		not remote_ip private_ranges
 	}
-	respond @blocked_geo "Access denied - this service is only available in Scandinavia (detected country: {geoip2.country_code})" 403
+	respond @blocked_geo "Access denied - this service is only available in Scandinavia" 403
 }
 
 # Rate limiting snippet - configurable limits
@@ -65,7 +58,7 @@
 			events 100
 			window 1m
 		}
-
+		
 		# Stricter zone for API endpoints - 30 requests per minute per IP
 		zone api {
 			match {
@@ -75,7 +68,7 @@
 			events 30
 			window 1m
 		}
-
+		
 		# Very strict zone for auth endpoints - 10 requests per minute per IP
 		zone auth {
 			match {
@@ -85,35 +78,37 @@
 			events 10
 			window 1m
 		}
-
+		
+		# Log the key when rate limit is hit (useful for debugging)
 		log_key
+		
+		# Add some jitter to Retry-After header (avoids thundering herd)
 		jitter 0.2
 	}
 }
 
-# site block
+# site block, listens on the $PORT environment variable, automatically assigned by railway
 :{$PORT} {
+	# access logs
 	log {
-		format json
+		format json # set access log format to json mode
 	}
 
-	# Debug endpoint - shows what IP Caddy sees
+	# Debug endpoint - shows what IP Caddy sees (remove in production!)
+	# Using route to ensure this runs BEFORE any other matchers
 	route /debug/ip {
-		geoip2_vars trusted_proxies
 		respond "Remote IP: {remote_host}
-Client IP: {client_ip}
-X-Forwarded-For: {header.X-Forwarded-For}
-X-Real-IP: {header.X-Real-IP}
-GeoIP Country: {geoip2.country_code}
-GeoIP Country Name: {geoip2.country_name}"
+		Client IP: {client_ip}
+		X-Forwarded-For: {header.X-Forwarded-For}
+		X-Real-IP: {header.X-Real-IP}"
 	}
 
-	# Apply geo-blocking (skip for debug endpoint)
+	# Apply geo-blocking (skip for debug endpoint above)
 	@not_debug not path /debug/ip
 	handle @not_debug {
 		import geo_block_scandinavia
 	}
-
+	
 	# Apply rate limiting
 	import rate_limiting
 
@@ -149,10 +144,37 @@ GeoIP Country Name: {geoip2.country_name}"
 		}
 	}
 
-	# API paths go to backend - handle_path strips the /api prefix
-	# MUST come before the catch-all frontend proxy!
-	handle_path /api/* {
+	# proxy all requests for /* to the frontend, configure these variables in the service settings
+	reverse_proxy {
+		# for private networking replicas are exposed as multiple dns results, use those dns results as the upstreams
+		dynamic a {
+			name {$FRONTEND_DOMAIN}
+			port {$FRONTEND_PORT}
+			refresh 1s
+			dial_timeout 30s
+			versions ipv4 ipv6
+		}
+
+		# configure load balancing settings
+		import lb_settings
+
+		# configure passive health checks
+		import passive_health_checks
+
+		# sets the Host header to the header to the dynamic name and port options
+		header_up Host {upstream_hostport}
+	}
+
+	# the handle_path directive WILL strip /api/ from the path before proxying
+	# use `handle` instead of `handle_path` if you dont want to strip the /api/ path
+	# this is needed if your backend's api routes don't start with /api/
+	# change paths as needed
+	handle_path {$BACKEND_PATH:/api}/* {
+		# the /api/ prefix WILL be stripped from the uri sent to the proxy host
+		#
+		# proxy all requests for /api/* to the backend, configure this variable in the service settings
 		reverse_proxy {
+			# for private networking replicas are exposed as multiple dns results, use those dns results as the upstreams
 			dynamic a {
 				name {$BACKEND_DOMAIN}
 				port {$BACKEND_PORT}
@@ -160,25 +182,14 @@ GeoIP Country Name: {geoip2.country_name}"
 				dial_timeout 30s
 				versions ipv4 ipv6
 			}
-			import lb_settings
-			import passive_health_checks
-			header_up Host {upstream_hostport}
-		}
-	}
 
-	# Catch-all: proxy everything else to frontend
-	# This MUST be last!
-	handle {
-		reverse_proxy {
-			dynamic a {
-				name {$FRONTEND_DOMAIN}
-				port {$FRONTEND_PORT}
-				refresh 1s
-				dial_timeout 30s
-				versions ipv4 ipv6
-			}
+			# configure load balancing settings
 			import lb_settings
+
+			# configure passive health checks
 			import passive_health_checks
+
+			# sets the Host header to the header to the dynamic name and port options
 			header_up Host {upstream_hostport}
 		}
 	}
