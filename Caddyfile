@@ -3,6 +3,10 @@
 	admin off # theres no need for the admin api in railway's environment
 	persist_config off # storage isn't persistent anyway
 	auto_https off # railway handles https for us, this could in some cases cause issues if left enabled
+	
+	# Order rate_limit before other handlers
+	order rate_limit before basic_auth
+	
 	# runtime logs
 	log {
 		format json # set runtime log format to json mode 
@@ -27,6 +31,58 @@
 	unhealthy_request_count 200
 }
 
+# Geo-blocking snippet - allows only Scandinavian countries
+# NO = Norway, SE = Sweden, DK = Denmark, FI = Finland, IS = Iceland
+(geo_block_scandinavia) {
+	@blocked_geo {
+		not maxmind_geolocation {
+			db_path "/usr/share/GeoIP/GeoLite2-Country.mmdb"
+			allow_countries NO SE DK FI IS
+		}
+		# Also allow private/local IP ranges (for internal services)
+		not remote_ip private_ranges
+	}
+	respond @blocked_geo "Access denied - this service is only available in Scandinavia" 403
+}
+
+# Rate limiting snippet - configurable limits
+(rate_limiting) {
+	rate_limit {
+		# Zone for general requests - 100 requests per minute per IP
+		zone general {
+			key {remote_host}
+			events 100
+			window 1m
+		}
+		
+		# Stricter zone for API endpoints - 30 requests per minute per IP
+		zone api {
+			match {
+				path /api/*
+			}
+			key {remote_host}
+			events 30
+			window 1m
+		}
+		
+		# Very strict zone for auth endpoints - 10 requests per minute per IP
+		zone auth {
+			match {
+				path /oauth2/* /login/*
+			}
+			key {remote_host}
+			events 10
+			window 1m
+		}
+		
+		# Log the key when rate limit is hit (useful for debugging)
+		log_key
+		
+		# Add some jitter to Retry-After header (avoids thundering herd)
+		jitter 0.2
+	}
+}
+
 # site block, listens on the $PORT environment variable, automatically assigned by railway
 :{$PORT} {
 	# access logs
@@ -34,37 +90,43 @@
 		format json # set access log format to json mode
 	}
 
-	# OAuth2 paths must go to backend
-    handle /oauth2/* {
-        reverse_proxy {
-            dynamic a {
-                name {$BACKEND_DOMAIN}
-                port {$BACKEND_PORT}
-                refresh 1s
-                dial_timeout 30s
-                versions ipv4 ipv6
-            }
-            import lb_settings
-            import passive_health_checks
-            header_up Host {upstream_hostport}
-        }
-    }
+	# Apply geo-blocking first (before anything else)
+	import geo_block_scandinavia
+	
+	# Apply rate limiting
+	import rate_limiting
 
-    # OAuth2 callback must go to backend
-    handle /login/oauth2/* {
-        reverse_proxy {
-            dynamic a {
-                name {$BACKEND_DOMAIN}
-                port {$BACKEND_PORT}
-                refresh 1s
-                dial_timeout 30s
-                versions ipv4 ipv6
-            }
-            import lb_settings
-            import passive_health_checks
-            header_up Host {upstream_hostport}
-        }
-    }
+	# OAuth2 paths must go to backend
+	handle /oauth2/* {
+		reverse_proxy {
+			dynamic a {
+				name {$BACKEND_DOMAIN}
+				port {$BACKEND_PORT}
+				refresh 1s
+				dial_timeout 30s
+				versions ipv4 ipv6
+			}
+			import lb_settings
+			import passive_health_checks
+			header_up Host {upstream_hostport}
+		}
+	}
+
+	# OAuth2 callback must go to backend
+	handle /login/oauth2/* {
+		reverse_proxy {
+			dynamic a {
+				name {$BACKEND_DOMAIN}
+				port {$BACKEND_PORT}
+				refresh 1s
+				dial_timeout 30s
+				versions ipv4 ipv6
+			}
+			import lb_settings
+			import passive_health_checks
+			header_up Host {upstream_hostport}
+		}
+	}
 
 	# proxy all requests for /* to the frontend, configure these variables in the service settings
 	reverse_proxy {
