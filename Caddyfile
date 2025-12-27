@@ -13,7 +13,11 @@
 	}
 	# server options
 	servers {
-		trusted_proxies static private_ranges # trust railway's proxy
+		# Trust all proxies since Railway's edge proxies don't have static IPs
+		# Railway appends the real client IP to X-Forwarded-For (rightmost is trustworthy)
+		trusted_proxies static 0.0.0.0/0 ::/0
+		# Use strict mode to parse X-Forwarded-For from right-to-left (more secure)
+		trusted_proxies_strict
 	}
 }
 
@@ -50,7 +54,7 @@
 	rate_limit {
 		# Zone for general requests - 100 requests per minute per IP
 		zone general {
-			key {remote_host}
+			key {client_ip}
 			events 100
 			window 1m
 		}
@@ -60,7 +64,7 @@
 			match {
 				path /api/*
 			}
-			key {remote_host}
+			key {client_ip}
 			events 30
 			window 1m
 		}
@@ -70,7 +74,7 @@
 			match {
 				path /oauth2/* /login/*
 			}
-			key {remote_host}
+			key {client_ip}
 			events 10
 			window 1m
 		}
