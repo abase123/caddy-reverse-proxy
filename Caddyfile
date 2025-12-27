@@ -44,7 +44,6 @@
 
 # Geo-blocking snippet - allows only Scandinavian countries
 # NO = Norway, SE = Sweden, DK = Denmark, FI = Finland, IS = Iceland
-# Uses caddy-geoip2 which respects trusted_proxies for X-Forwarded-For parsing
 (geo_block_scandinavia) {
 	# Use trusted_proxies mode to respect X-Forwarded-For header
 	geoip2_vars trusted_proxies
@@ -150,26 +149,30 @@ GeoIP Country Name: {geoip2.country_name}"
 		}
 	}
 
-	# proxy all requests for /* to the frontend
-	reverse_proxy {
-		dynamic a {
-			name {$FRONTEND_DOMAIN}
-			port {$FRONTEND_PORT}
-			refresh 1s
-			dial_timeout 30s
-			versions ipv4 ipv6
-		}
-		import lb_settings
-		import passive_health_checks
-		header_up Host {upstream_hostport}
-	}
-
-	# handle_path strips the prefix before proxying
-	handle_path {$BACKEND_PATH:/api}/* {
+	# API paths go to backend - handle_path strips the /api prefix
+	# MUST come before the catch-all frontend proxy!
+	handle_path /api/* {
 		reverse_proxy {
 			dynamic a {
 				name {$BACKEND_DOMAIN}
 				port {$BACKEND_PORT}
+				refresh 1s
+				dial_timeout 30s
+				versions ipv4 ipv6
+			}
+			import lb_settings
+			import passive_health_checks
+			header_up Host {upstream_hostport}
+		}
+	}
+
+	# Catch-all: proxy everything else to frontend
+	# This MUST be last!
+	handle {
+		reverse_proxy {
+			dynamic a {
+				name {$FRONTEND_DOMAIN}
+				port {$FRONTEND_PORT}
 				refresh 1s
 				dial_timeout 30s
 				versions ipv4 ipv6
