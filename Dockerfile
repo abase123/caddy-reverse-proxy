@@ -11,10 +11,12 @@ WORKDIR /app
 # Copy the custom-built Caddy binary with rate limiting support
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 
+# Copy configuration files
 COPY Caddyfile ./
 
 COPY --chmod=755 entrypoint.sh ./
 
+# Format and validate Caddyfile
 RUN caddy fmt --overwrite Caddyfile
 
 ENTRYPOINT ["/bin/sh"]
